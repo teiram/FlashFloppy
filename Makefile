@@ -59,13 +59,13 @@ mrproper: clean
 
 endif
 
-BAUD=115200
+BAUD=57600
 
 flash:
-	sudo stm32flash -b $(BAUD) -w FF_Gotek-$(VER).hex /dev/ttyUSB0
+	stm32flash -b $(BAUD) -w FF_Gotek-$(VER).hex /dev/ttyUSB0
 
 start:
-	sudo stm32flash -b $(BAUD) -g 0 /dev/ttyUSB0
+	stm32flash -b $(BAUD) -g 0 /dev/ttyUSB0
 
 serial:
-	sudo miniterm.py /dev/ttyUSB0 3000000
+	miniterm.py /dev/ttyUSB0 57600
