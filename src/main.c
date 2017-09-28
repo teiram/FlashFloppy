@@ -29,6 +29,9 @@ static struct {
 static bool_t first_startup = TRUE;
 static bool_t ejected;
 
+/* Wrap slot number at 0 and max? */
+#define config_nav_loop TRUE
+
 static uint8_t cfg_mode;
 #define CFG_none      0 /* Iterate through all images in root. */
 #define CFG_hxc       1 /* Operation based on HXCSDFE.CFG. */
@@ -114,7 +117,6 @@ static void lcd_scroll_name(void)
 static uint8_t lcd_handle_backlight(uint8_t b)
 {
     if ((display_mode != DM_LCD_1602)
-        || !lcd_has_backlight()
         || (cfg.backlight_on_secs == 0)
         || (cfg.backlight_on_secs == 0xff))
         return b;
@@ -555,14 +557,20 @@ static void choose_new_image(uint8_t init_b)
         } else if (b & B_LEFT) {
         b_left:
             do {
-                if (i-- == 0)
-                    goto b_right;
+                if (i-- == 0) {
+                    if (!config_nav_loop)
+                        goto b_right;
+                    i = cfg.max_slot_nr;
+                }
             } while (!(cfg.slot_map[i/8] & (0x80>>(i&7))));
         } else { /* b & B_RIGHT */
         b_right:
             do {
-                if (i++ >= cfg.max_slot_nr)
-                    goto b_left;
+                if (i++ >= cfg.max_slot_nr) {
+                    if (!config_nav_loop)
+                        goto b_left;
+                    i = 0;
+                }
             } while (!(cfg.slot_map[i/8] & (0x80>>(i&7))));
         }
 
@@ -774,7 +782,7 @@ int main(void)
 
     usbh_msc_init();
 
-    cfg.backlight_on_secs = 0xff;
+    cfg.backlight_on_secs = BACKLIGHT_ON_SECS;
     timer_init(&button_timer, button_timer_fn, NULL);
     timer_set(&button_timer, stk_now());
 
