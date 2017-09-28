@@ -50,6 +50,11 @@ static struct tib *tib_p(struct image *im)
     return (struct tib *)((char *)rd->p + 128);
 }
 
+static struct sib *sib_p(struct tib *tib, int snum)
+{
+    return &(tib->sib[snum]);
+}
+
 static bool_t dsk_open(struct image *im)
 {
     struct dib *dib = dib_p(im);
@@ -76,6 +81,7 @@ static bool_t dsk_open(struct image *im)
     im->nr_cyls = dib->nr_tracks;
     im->nr_sides = dib->nr_sides;
 
+    
     return TRUE;
 }
 
@@ -123,7 +129,7 @@ static bool_t dsk_seek_track(
     im->dsk.idx_sz = GAP_4A;
     im->dsk.idx_sz += GAP_SYNC + 4 + GAP_1;
     im->dsk.idam_sz = GAP_SYNC + 8 + 2 + GAP_2;
-    im->dsk.dam_sz = GAP_SYNC + 4 + /*sec_sz +*/ 2 + tib->gap3;
+    im->dsk.dam_sz = GAP_SYNC + 4 + tib->sec_sz + 2 + tib->gap3;
 
     /* Work out minimum track length (with no pre-index track gap). */
     tracklen = (im->dsk.idam_sz + im->dsk.dam_sz) * tib->nr_secs;
@@ -154,7 +160,7 @@ static bool_t dsk_seek_track(
     im->dsk.gap4 = (im->tracklen_bc - tracklen) / 16;
 
     im->dsk.write_sector = -1;
-    im->dsk.trk_len = tib->nr_secs * sec_sz;
+    im->dsk.trk_len = tib->nr_secs * tib->sec_sz;
     im->dsk.trk_off = ((uint32_t)cyl * im->nr_sides + side) * im->dsk.trk_len;
     im->dsk.trk_pos = 0;
     im->ticks_since_flux = 0;
@@ -173,7 +179,7 @@ static bool_t dsk_seek_track(
         decode_off -= im->dsk.idx_sz;
         im->dsk.decode_pos = decode_off / (im->dsk.idam_sz + im->dsk.dam_sz);
         if (im->dsk.decode_pos < tib->nr_secs) {
-            im->dsk.trk_pos = im->dsk.decode_pos * sec_sz;
+            im->dsk.trk_pos = im->dsk.decode_pos * tib->sec_sz;
             im->dsk.decode_pos = im->dsk.decode_pos * 2 + 1;
             decode_off %= im->dsk.idam_sz + im->dsk.dam_sz;
             if (decode_off >= im->dsk.idam_sz) {
@@ -203,6 +209,7 @@ static bool_t dsk_read_track(struct image *im)
 {
     struct image_buf *rd = &im->bufs.read_data;
     struct image_buf *mfm = &im->bufs.read_mfm;
+    struct tib *tib = tib_p(im);
     uint8_t *buf = rd->p;
     uint16_t *mfmb = mfm->p;
     unsigned int i, mfmlen, mfmp, mfmc;
@@ -211,9 +218,9 @@ static bool_t dsk_read_track(struct image *im)
 
     if (rd->prod == rd->cons) {
         F_lseek(&im->fp, im->dsk.trk_off + im->dsk.trk_pos);
-        F_read(&im->fp, &buf[(rd->prod/8) % buflen], sec_sz, NULL);
-        rd->prod += sec_sz * 8;
-        im->dsk.trk_pos += sec_sz;
+        F_read(&im->fp, &buf[(rd->prod/8) % buflen], tib->sec_sz, NULL);
+        rd->prod += tib->sec_sz * 8;
+        im->dsk.trk_pos += tib->sec_sz;
         if (im->dsk.trk_pos >= im->dsk.trk_len)
             im->dsk.trk_pos = 0;
     }
@@ -272,23 +279,23 @@ static bool_t dsk_read_track(struct image *im)
         /* DAM */
         uint8_t *dat = &buf[(rd->cons/8)%buflen];
         uint8_t dam[4] = { 0xa1, 0xa1, 0xa1, 0xfb };
-        if ((mfmlen - (mfmp - mfmc)) < (GAP_SYNC + 4 + sec_sz + 2
-                                        + im->dsk.gap3))
+        if ((mfmlen - (mfmp - mfmc)) < (GAP_SYNC + 4 + tib->sec_sz + 2
+                                        + tib->gap3))
             return FALSE;
         for (i = 0; i < GAP_SYNC; i++)
             emit_byte(0x00);
         for (i = 0; i < 3; i++)
             emit_raw(0x4489);
         emit_byte(dam[3]);
-        for (i = 0; i < sec_sz; i++)
+        for (i = 0; i < tib->sec_sz; i++)
             emit_byte(dat[i]);
         crc = crc16_ccitt(dam, sizeof(dam), 0xffff);
-        crc = crc16_ccitt(dat, sec_sz, crc);
+        crc = crc16_ccitt(dat, tib->sec_sz, crc);
         emit_byte(crc >> 8);
         emit_byte(crc);
-        for (i = 0; i < im->dsk.gap3; i++)
+        for (i = 0; i < tib->gap3; i++)
             emit_byte(0x4e);
-        rd->cons += sec_sz * 8;
+        rd->cons += tib->sec_sz * 8;
     }
 
     im->dsk.decode_pos++;
@@ -345,7 +352,7 @@ out:
 static void dsk_write_track(struct image *im, bool_t flush)
 {
     const uint8_t header[] = { 0xa1, 0xa1, 0xa1, 0xfb };
-
+    struct tib *tib = tib_p(im);
     struct image_buf *wr = &im->bufs.write_mfm;
     uint16_t *buf = wr->p;
     unsigned int buflen = wr->len / 2;
@@ -369,8 +376,9 @@ static void dsk_write_track(struct image *im, bool_t flush)
             im->dsk.write_sector = -2;
         } else {
             /* Convert rotational order to logical order. */
-            im->dsk.write_sector = im->dsk.sec_map[im->dsk.write_sector];
-            im->dsk.write_sector -= im->dsk.sec_base;
+            //im->dsk.write_sector = im->dsk.sec_map[im->dsk.write_sector];
+            im->dsk.write_sector = sib_p(tib, im->dsk.write_sector)->r;
+            im->dsk.write_sector -= sib_p(tib, 0)->r;
         }
     }
 
@@ -378,7 +386,7 @@ static void dsk_write_track(struct image *im, bool_t flush)
     if (flush && (wr->prod & 15))
         p++;
 
-    while ((p - c) >= (3 + sec_sz + 2)) {
+    while ((p - c) >= (3 + tib->sec_sz + 2)) {
 
         /* Scan for sync words and IDAM. Because of the way we sync we expect
          * to see only 2*4489 and thus consume only 3 words for the header. */
@@ -401,7 +409,7 @@ static void dsk_write_track(struct image *im, bool_t flush)
                 printk("IMG IDAM Bad CRC %04x, sector %u\n", crc, wrbuf[6]);
                 break;
             }
-            im->dsk.write_sector = wrbuf[6] - im->dsk.sec_base;
+            im->dsk.write_sector = wrbuf[6] - sib_p(tib, 0)->r;
             if ((uint8_t)im->dsk.write_sector >= tib->nr_secs) {
                 printk("IMG IDAM Bad Sector: %u\n", wrbuf[6]);
                 im->dsk.write_sector = -2;
@@ -409,15 +417,15 @@ static void dsk_write_track(struct image *im, bool_t flush)
             break;
 
         case 0xfb: /* DAM */
-            for (i = 0; i < (sec_sz + 2); i++)
+            for (i = 0; i < (tib->sec_sz + 2); i++)
                 wrbuf[i] = mfmtobin(buf[c++ % buflen]);
 
-            crc = crc16_ccitt(wrbuf, sec_sz + 2,
+            crc = crc16_ccitt(wrbuf, tib->sec_sz + 2,
                               crc16_ccitt(header, 4, 0xffff));
             if (crc != 0) {
                 printk("IMG Bad CRC %04x, sector %u[%u]\n",
                        crc, im->dsk.write_sector,
-                       im->dsk.write_sector + im->dsk.sec_base);
+                       im->dsk.write_sector + sib_p(tib, 0)->r);
                 break;
             }
 
@@ -429,11 +437,11 @@ static void dsk_write_track(struct image *im, bool_t flush)
 
             /* All good: write out to mass storage. */
             printk("Write %u[%u]/%u... ", im->dsk.write_sector,
-                   im->dsk.write_sector + im->dsk.sec_base,
+                   im->dsk.write_sector + sib_p(tib, 0)->r,
                    tib->nr_secs);
             t = stk_now();
-            F_lseek(&im->fp, im->dsk.trk_off + im->dsk.write_sector*sec_sz);
-            F_write(&im->fp, wrbuf, sec_sz, NULL);
+            F_lseek(&im->fp, im->dsk.trk_off + im->dsk.write_sector * tib->sec_sz);
+            F_write(&im->fp, wrbuf, tib->sec_sz, NULL);
             printk("%u us\n", stk_diff(t, stk_now()) / STK_MHZ);
             break;
         }
